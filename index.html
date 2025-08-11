@@ -2,221 +2,222 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <title>Arbres Bordeaux - Clustering</title>
+  <title>Arbres Bordeaux avec Heatmap + Points</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
   <style>
     body { margin:0; font-family: Arial, sans-serif; }
-    #map { width: 100%; height: 500px; }
-    #total { margin: 10px; font-weight: bold; }
+    #map { width: 100%; height: 400px; margin-bottom: 20px; }
+    table { border-collapse: collapse; width: 100%; margin-bottom: 40px; }
+    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+    th { background-color: #f2f2f2; }
   </style>
 </head>
 <body>
 
-<h1>Arbres à Bordeaux (OpenData) - Clustering</h1>
-<p id="total">Chargement...</p>
+<h1>Arbres à Bordeaux (OpenData)</h1>
+<p id="total">Chargement des données...</p>
 <div id="map"></div>
+
+<table id="treeTable">
+  <thead>
+    <tr>
+      <th>Nom Français</th>
+      <th>Station</th>
+      <th>Circonférence (cm)</th>
+      <th>Hauteur (m)</th>
+      <th>Statut</th>
+      <th>Diamètre (cm)</th>
+      <th>Essence</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
 
 <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
 <script>
   mapboxgl.accessToken = 'pk.eyJ1IjoiamVqZTMzMDAwIiwiYSI6ImNtZTJ2c3RnaDAwczEyanF6bW9wODI0cTgifQ.AYOAKWDyDLP_fbKIz-QdwQ';
 
-  const baseUrl = 'https://bmproxy.jeromevallies.workers.dev/';
+  const map = new mapboxgl.Map({
+    container: 'map',
+    style: 'mapbox://styles/mapbox/streets-v12',
+    center: [-0.57, 44.85],
+    zoom: 12
+  });
 
-  async function fetchAllTrees() {
-    const limit = 1000;
-    let offset = 0;
-    let allResults = [];
-    let total = 0;
+  const heatmapLimit = 2000; // Nombre max d'arbres pour la heatmap
+  const detailZoomThreshold = 14;
 
-    while (true) {
-      const url = `${baseUrl}?limit=${limit}&offset=${offset}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error('Erreur réseau');
-      const data = await res.json();
-
-      if (offset === 0) total = data.total_count || 0;
-      allResults = allResults.concat(data.results);
-
-      offset += limit;
-      if (offset >= total) break;
-    }
-    return { total_count: total, results: allResults };
-  }
-
-  function toGeoJSON(data) {
-    const features = data.results.map(item => {
-      if (
-        item.geo_point_2d &&
-        typeof item.geo_point_2d.lon === 'number' &&
-        typeof item.geo_point_2d.lat === 'number' &&
-        item.geo_point_2d.lon >= -180 &&
-        item.geo_point_2d.lon <= 180 &&
-        item.geo_point_2d.lat >= -90 &&
-        item.geo_point_2d.lat <= 90
-      ) {
-        return {
-          type: 'Feature',
-          geometry: {
-            type: 'Point',
-            coordinates: [item.geo_point_2d.lon, item.geo_point_2d.lat]
-          },
-          properties: {
-            nom_francais: item.nom_francais || '',
-            station: item.station || '',
-            circonference: item.circonference || '',
-            hauteur: item.hauteur || '',
-            statut: item.statut || '',
-            diametre: item.diametre || '',
-            essence: item.essence || ''
-          }
-        };
-      }
-      return null;
-    }).filter(f => f !== null);
-
-    return {
-      type: 'FeatureCollection',
-      features
-    };
-  }
-
-  async function main() {
-    try {
-      const data = await fetchAllTrees();
+  // Charger la heatmap globale
+  fetch(`https://bmproxy.jeromevallies.workers.dev/?limit=${heatmapLimit}`)
+    .then(resp => {
+      if (!resp.ok) throw new Error('Erreur réseau');
+      return resp.json();
+    })
+    .then(data => {
       document.getElementById('total').textContent = `Nombre total d'arbres : ${data.total_count}`;
 
-      const geojson = toGeoJSON(data);
+      // Préparer les features pour heatmap
+      const features = data.results.map(item => ({
+        type: 'Feature',
+        geometry: {
+          type: 'Point',
+          coordinates: [item.geo_point_2d.lon, item.geo_point_2d.lat]
+        }
+      }));
 
-      const map = new mapboxgl.Map({
-        container: 'map',
-        style: 'mapbox://styles/mapbox/streets-v12',
-        center: [-0.57, 44.85],
-        zoom: 12
+      map.addSource('arbres-global', {
+        type: 'geojson',
+        data: {
+          type: 'FeatureCollection',
+          features
+        }
       });
 
-      map.on('load', () => {
-        map.addSource('arbres', {
-          type: 'geojson',
-          data: geojson,
-          cluster: true,
-          clusterMaxZoom: 14,
-          clusterRadius: 50
-        });
-
-        // Cercle clusters
-        map.addLayer({
-          id: 'clusters',
-          type: 'circle',
-          source: 'arbres',
-          filter: ['has', 'point_count'],
-          paint: {
-            'circle-color': [
-              'step',
-              ['get', 'point_count'],
-              '#51bbd6',
-              100,
-              '#f1f075',
-              750,
-              '#f28cb1'
-            ],
-            'circle-radius': [
-              'step',
-              ['get', 'point_count'],
-              20,
-              100,
-              30,
-              750,
-              40
-            ]
-          }
-        });
-
-        // Nombre dans clusters
-        map.addLayer({
-          id: 'cluster-count',
-          type: 'symbol',
-          source: 'arbres',
-          filter: ['has', 'point_count'],
-          layout: {
-            'text-field': '{point_count_abbreviated}',
-            'text-font': ['DIN Offc Pro Medium', 'Arial Unicode MS Bold'],
-            'text-size': 12
-          }
-        });
-
-        // Points individuels
-        map.addLayer({
-          id: 'unclustered-point',
-          type: 'circle',
-          source: 'arbres',
-          filter: ['!', ['has', 'point_count']],
-          paint: {
-            'circle-color': '#2ecc71',
-            'circle-radius': 5,
-            'circle-stroke-width': 1,
-            'circle-stroke-color': '#fff'
-          }
-        });
-
-        // Popup au clic sur point non clusterisé
-        map.on('click', 'unclustered-point', (e) => {
-          const coordinates = e.features[0].geometry.coordinates.slice();
-          const props = e.features[0].properties;
-
-          // Correction coordonnées si nécessaire pour popup
-          while (Math.abs(e.lngLat.lng - coordinates[0]) > 180) {
-            coordinates[0] += e.lngLat.lng > coordinates[0] ? 360 : -360;
-          }
-
-          new mapboxgl.Popup()
-            .setLngLat(coordinates)
-            .setHTML(`
-              <strong>${props.nom_francais}</strong><br/>
-              Station: ${props.station}<br/>
-              Circonférence: ${props.circonference} cm<br/>
-              Hauteur: ${props.hauteur} m<br/>
-              Essence: ${props.essence}
-            `)
-            .addTo(map);
-        });
-
-        // Zoom sur cluster au clic
-        map.on('click', 'clusters', (e) => {
-          const features = map.queryRenderedFeatures(e.point, { layers: ['clusters'] });
-          const clusterId = features[0].properties.cluster_id;
-          map.getSource('arbres').getClusterExpansionZoom(clusterId, (err, zoom) => {
-            if (err) return;
-            map.easeTo({
-              center: features[0].geometry.coordinates,
-              zoom: zoom
-            });
-          });
-        });
-
-        map.on('mouseenter', 'clusters', () => {
-          map.getCanvas().style.cursor = 'pointer';
-        });
-        map.on('mouseleave', 'clusters', () => {
-          map.getCanvas().style.cursor = '';
-        });
-
-        map.on('mouseenter', 'unclustered-point', () => {
-          map.getCanvas().style.cursor = 'pointer';
-        });
-        map.on('mouseleave', 'unclustered-point', () => {
-          map.getCanvas().style.cursor = '';
-        });
+      map.addLayer({
+        id: 'heatmap',
+        type: 'heatmap',
+        source: 'arbres-global',
+        maxzoom: detailZoomThreshold,
+        paint: {
+          'heatmap-weight': 1,
+          'heatmap-intensity': 1,
+          'heatmap-radius': 15,
+          'heatmap-opacity': 0.6
+        }
       });
 
-    } catch (e) {
-      document.getElementById('total').textContent = 'Erreur lors du chargement des données : ' + e.message;
-      console.error(e);
+    })
+    .catch(error => {
+      document.getElementById('total').textContent = `Erreur lors du chargement de la heatmap : ${error.message}`;
+      console.error(error);
+    });
+
+  // Source et couche pour points détaillés
+  map.on('load', () => {
+    map.addSource('arbres-details', {
+      type: 'geojson',
+      data: { type: 'FeatureCollection', features: [] }
+    });
+
+    map.addLayer({
+      id: 'points',
+      type: 'circle',
+      source: 'arbres-details',
+      minzoom: detailZoomThreshold,
+      paint: {
+        'circle-radius': 5,
+        'circle-color': '#228B22',
+        'circle-stroke-width': 1,
+        'circle-stroke-color': '#fff'
+      }
+    });
+
+    // Popup pour points
+    const popup = new mapboxgl.Popup({
+      closeButton: true,
+      closeOnClick: true
+    });
+
+    map.on('click', 'points', (e) => {
+      const props = e.features[0].properties;
+      popup
+        .setLngLat(e.features[0].geometry.coordinates)
+        .setHTML(`
+          <strong>${props.nom_francais || 'Arbre'}</strong><br/>
+          Station: ${props.station || 'N/A'}<br/>
+          Circonférence: ${props.circonference || 'N/A'} cm<br/>
+          Hauteur: ${props.hauteur || 'N/A'} m<br/>
+          Statut: ${props.statut || 'N/A'}<br/>
+          Diamètre: ${props.diametre || 'N/A'} cm<br/>
+          Essence: ${props.essence || 'N/A'}
+        `)
+        .addTo(map);
+    });
+
+    // Curseur pointer sur hover
+    map.on('mouseenter', 'points', () => {
+      map.getCanvas().style.cursor = 'pointer';
+    });
+    map.on('mouseleave', 'points', () => {
+      map.getCanvas().style.cursor = '';
+    });
+
+    // Charger les points détaillés à l'initial si zoom >= threshold
+    if (map.getZoom() >= detailZoomThreshold) {
+      loadDetailedPoints();
     }
+  });
+
+  // Fonction pour charger points détaillés dans bbox visible
+  function loadDetailedPoints() {
+    const bbox = map.getBounds();
+    const url = `https://bmproxy.jeromevallies.workers.dev/?bbox=${bbox.getWest()},${bbox.getSouth()},${bbox.getEast()},${bbox.getNorth()}&limit=1000`;
+
+    fetch(url)
+      .then(resp => {
+        if (!resp.ok) throw new Error('Erreur réseau');
+        return resp.json();
+      })
+      .then(data => {
+        // Mise à jour de la table HTML
+        const tbody = document.querySelector('#treeTable tbody');
+        tbody.innerHTML = '';
+
+        const features = data.results.map(item => {
+          // Mise à jour table
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${item.nom_francais || ''}</td>
+            <td>${item.station || ''}</td>
+            <td>${item.circonference || ''}</td>
+            <td>${item.hauteur || ''}</td>
+            <td>${item.statut || ''}</td>
+            <td>${item.diametre || ''}</td>
+            <td>${item.essence || ''}</td>
+          `;
+          tbody.appendChild(tr);
+
+          // Préparation features GeoJSON
+          return {
+            type: 'Feature',
+            geometry: {
+              type: 'Point',
+              coordinates: [item.geo_point_2d.lon, item.geo_point_2d.lat]
+            },
+            properties: {
+              nom_francais: item.nom_francais || '',
+              station: item.station || '',
+              circonference: item.circonference || '',
+              hauteur: item.hauteur || '',
+              statut: item.statut || '',
+              diametre: item.diametre || '',
+              essence: item.essence || ''
+            }
+          };
+        });
+
+        map.getSource('arbres-details').setData({
+          type: 'FeatureCollection',
+          features
+        });
+      })
+      .catch(error => {
+        console.error('Erreur chargement points détaillés:', error);
+      });
   }
 
-  main();
-</script>
+  // Ecoute sur déplacement et zoom pour rafraichir points détaillés
+  map.on('moveend', () => {
+    if (map.getZoom() >= detailZoomThreshold) {
+      loadDetailedPoints();
+    } else {
+      // Vider points détaillés et table si zoom < threshold
+      map.getSource('arbres-details').setData({ type: 'FeatureCollection', features: [] });
+      document.querySelector('#treeTable tbody').innerHTML = '';
+    }
+  });
 
+</script>
 </body>
 </html>

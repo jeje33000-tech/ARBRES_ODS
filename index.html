@@ -2,222 +2,204 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <title>Arbres Bordeaux avec Heatmap + Points</title>
+  <title>Opendata arbres Bordeaux - Pagination</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
   <style>
     body { margin:0; font-family: Arial, sans-serif; }
-    #map { width: 100%; height: 400px; margin-bottom: 20px; }
-    table { border-collapse: collapse; width: 100%; margin-bottom: 40px; }
-    th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
-    th { background-color: #f2f2f2; }
+    #map { width: 100%; height: 500px; }
+    #info { padding: 10px; }
+    button { padding: 10px 15px; font-size: 16px; cursor: pointer; }
   </style>
 </head>
 <body>
 
-<h1>Arbres à Bordeaux (OpenData)</h1>
-<p id="total">Chargement des données...</p>
-<div id="map"></div>
+  <h1>Arbres à Bordeaux (OpenData) avec pagination</h1>
+  <div id="info">
+    <p id="total">Chargement...</p>
+    <button id="loadMore" style="display:none;">Charger plus</button>
+  </div>
+  <div id="map"></div>
 
-<table id="treeTable">
-  <thead>
-    <tr>
-      <th>Nom Français</th>
-      <th>Station</th>
-      <th>Circonférence (cm)</th>
-      <th>Hauteur (m)</th>
-      <th>Statut</th>
-      <th>Diamètre (cm)</th>
-      <th>Essence</th>
-    </tr>
-  </thead>
-  <tbody></tbody>
-</table>
+  <script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
+  <script>
+    mapboxgl.accessToken = 'pk.eyJ1IjoiamVqZTMzMDAwIiwiYSI6ImNtZTJ2c3RnaDAwczEyanF6bW9wODI0cTgifQ.AYOAKWDyDLP_fbKIz-QdwQ';
 
-<script src="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.js"></script>
-<script>
-  mapboxgl.accessToken = 'pk.eyJ1IjoiamVqZTMzMDAwIiwiYSI6ImNtZTJ2c3RnaDAwczEyanF6bW9wODI0cTgifQ.AYOAKWDyDLP_fbKIz-QdwQ';
+    const pageSize = 100;
+    let currentPage = 0;
+    let currentData = [];
+    let markers = [];
+    let map;
+    let heatmapSourceId = 'trees-heatmap';
+    let pointsSourceId = 'trees-points';
 
-  const map = new mapboxgl.Map({
-    container: 'map',
-    style: 'mapbox://styles/mapbox/streets-v12',
-    center: [-0.57, 44.85],
-    zoom: 12
-  });
+    const urlBase = 'https://bmproxy.jeromevallies.workers.dev/';
 
-  const heatmapLimit = 2000; // Nombre max d'arbres pour la heatmap
-  const detailZoomThreshold = 14;
+    const totalEl = document.getElementById('total');
+    const loadMoreBtn = document.getElementById('loadMore');
 
-  // Charger la heatmap globale
-  fetch(`https://bmproxy.jeromevallies.workers.dev/?limit=${heatmapLimit}`)
-    .then(resp => {
-      if (!resp.ok) throw new Error('Erreur réseau');
-      return resp.json();
-    })
-    .then(data => {
-      document.getElementById('total').textContent = `Nombre total d'arbres : ${data.total_count}`;
-
-      // Préparer les features pour heatmap
-      const features = data.results.map(item => ({
-        type: 'Feature',
-        geometry: {
-          type: 'Point',
-          coordinates: [item.geo_point_2d.lon, item.geo_point_2d.lat]
-        }
-      }));
-
-      map.addSource('arbres-global', {
-        type: 'geojson',
-        data: {
-          type: 'FeatureCollection',
-          features
-        }
-      });
-
-      map.addLayer({
-        id: 'heatmap',
-        type: 'heatmap',
-        source: 'arbres-global',
-        maxzoom: detailZoomThreshold,
-        paint: {
-          'heatmap-weight': 1,
-          'heatmap-intensity': 1,
-          'heatmap-radius': 15,
-          'heatmap-opacity': 0.6
-        }
-      });
-
-    })
-    .catch(error => {
-      document.getElementById('total').textContent = `Erreur lors du chargement de la heatmap : ${error.message}`;
-      console.error(error);
-    });
-
-  // Source et couche pour points détaillés
-  map.on('load', () => {
-    map.addSource('arbres-details', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: [] }
-    });
-
-    map.addLayer({
-      id: 'points',
-      type: 'circle',
-      source: 'arbres-details',
-      minzoom: detailZoomThreshold,
-      paint: {
-        'circle-radius': 5,
-        'circle-color': '#228B22',
-        'circle-stroke-width': 1,
-        'circle-stroke-color': '#fff'
-      }
-    });
-
-    // Popup pour points
-    const popup = new mapboxgl.Popup({
-      closeButton: true,
-      closeOnClick: true
-    });
-
-    map.on('click', 'points', (e) => {
-      const props = e.features[0].properties;
-      popup
-        .setLngLat(e.features[0].geometry.coordinates)
-        .setHTML(`
-          <strong>${props.nom_francais || 'Arbre'}</strong><br/>
-          Station: ${props.station || 'N/A'}<br/>
-          Circonférence: ${props.circonference || 'N/A'} cm<br/>
-          Hauteur: ${props.hauteur || 'N/A'} m<br/>
-          Statut: ${props.statut || 'N/A'}<br/>
-          Diamètre: ${props.diametre || 'N/A'} cm<br/>
-          Essence: ${props.essence || 'N/A'}
-        `)
-        .addTo(map);
-    });
-
-    // Curseur pointer sur hover
-    map.on('mouseenter', 'points', () => {
-      map.getCanvas().style.cursor = 'pointer';
-    });
-    map.on('mouseleave', 'points', () => {
-      map.getCanvas().style.cursor = '';
-    });
-
-    // Charger les points détaillés à l'initial si zoom >= threshold
-    if (map.getZoom() >= detailZoomThreshold) {
-      loadDetailedPoints();
+    // Fonction pour construire l'URL avec bbox, limit, offset
+    function buildUrl(bbox, limit = pageSize, offset = 0) {
+      return `${urlBase}?bbox=${bbox.getWest()},${bbox.getSouth()},${bbox.getEast()},${bbox.getNorth()}&limit=${limit}&offset=${offset}`;
     }
-  });
 
-  // Fonction pour charger points détaillés dans bbox visible
-  function loadDetailedPoints() {
-    const bbox = map.getBounds();
-    const url = `https://bmproxy.jeromevallies.workers.dev/?bbox=${bbox.getWest()},${bbox.getSouth()},${bbox.getEast()},${bbox.getNorth()}&limit=1000`;
+    // Supprimer tous les markers visibles
+    function clearMarkers() {
+      markers.forEach(m => m.remove());
+      markers = [];
+    }
 
-    fetch(url)
-      .then(resp => {
-        if (!resp.ok) throw new Error('Erreur réseau');
-        return resp.json();
-      })
-      .then(data => {
-        // Mise à jour de la table HTML
-        const tbody = document.querySelector('#treeTable tbody');
-        tbody.innerHTML = '';
+    // Ajouter des markers Mapbox pour les points
+    function addMarkers(points) {
+      points.forEach(item => {
+        if (item.geo_point_2d && item.geo_point_2d.lon && item.geo_point_2d.lat) {
+          const m = new mapboxgl.Marker()
+            .setLngLat([item.geo_point_2d.lon, item.geo_point_2d.lat])
+            .setPopup(new mapboxgl.Popup({ offset: 25 })
+              .setHTML(`
+                <strong>${item.nom_francais || 'Arbre'}</strong><br/>
+                Station: ${item.station || 'N/A'}<br/>
+                Circonférence: ${item.circonference || 'N/A'} cm<br/>
+                Hauteur: ${item.hauteur || 'N/A'} m<br/>
+                Essence: ${item.essence || 'N/A'}
+              `))
+            .addTo(map);
+          markers.push(m);
+        }
+      });
+    }
 
-        const features = data.results.map(item => {
-          // Mise à jour table
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td>${item.nom_francais || ''}</td>
-            <td>${item.station || ''}</td>
-            <td>${item.circonference || ''}</td>
-            <td>${item.hauteur || ''}</td>
-            <td>${item.statut || ''}</td>
-            <td>${item.diametre || ''}</td>
-            <td>${item.essence || ''}</td>
-          `;
-          tbody.appendChild(tr);
-
-          // Préparation features GeoJSON
-          return {
-            type: 'Feature',
+    // Convertir les arbres en GeoJSON pour heatmap
+    function toGeoJSON(features) {
+      return {
+        type: "FeatureCollection",
+        features: features
+          .filter(item => item.geo_point_2d && item.geo_point_2d.lon && item.geo_point_2d.lat)
+          .map(item => ({
+            type: "Feature",
             geometry: {
-              type: 'Point',
+              type: "Point",
               coordinates: [item.geo_point_2d.lon, item.geo_point_2d.lat]
             },
-            properties: {
-              nom_francais: item.nom_francais || '',
-              station: item.station || '',
-              circonference: item.circonference || '',
-              hauteur: item.hauteur || '',
-              statut: item.statut || '',
-              diametre: item.diametre || '',
-              essence: item.essence || ''
-            }
-          };
-        });
-
-        map.getSource('arbres-details').setData({
-          type: 'FeatureCollection',
-          features
-        });
-      })
-      .catch(error => {
-        console.error('Erreur chargement points détaillés:', error);
-      });
-  }
-
-  // Ecoute sur déplacement et zoom pour rafraichir points détaillés
-  map.on('moveend', () => {
-    if (map.getZoom() >= detailZoomThreshold) {
-      loadDetailedPoints();
-    } else {
-      // Vider points détaillés et table si zoom < threshold
-      map.getSource('arbres-details').setData({ type: 'FeatureCollection', features: [] });
-      document.querySelector('#treeTable tbody').innerHTML = '';
+            properties: {}
+          }))
+      };
     }
-  });
 
-</script>
+    // Charger et afficher heatmap avec un échantillon global
+    function loadHeatmapSample() {
+      // Ici on demande juste 100 arbres sans bbox (par défaut tout Bordeaux)
+      fetch(`${urlBase}?limit=${pageSize}`)
+        .then(resp => {
+          if (!resp.ok) throw new Error('Erreur réseau heatmap');
+          return resp.json();
+        })
+        .then(data => {
+          totalEl.textContent = `Nombre total d'arbres connus : ${data.total_count}`;
+
+          // Ajouter la source et layer heatmap
+          if (map.getSource(heatmapSourceId)) {
+            map.getSource(heatmapSourceId).setData(toGeoJSON(data.results));
+          } else {
+            map.addSource(heatmapSourceId, {
+              type: "geojson",
+              data: toGeoJSON(data.results)
+            });
+            map.addLayer({
+              id: heatmapSourceId,
+              type: "heatmap",
+              source: heatmapSourceId,
+              maxzoom: 12,
+              paint: {
+                // heatmap intensity and color config
+                "heatmap-weight": 1,
+                "heatmap-intensity": 1,
+                "heatmap-color": [
+                  "interpolate",
+                  ["linear"],
+                  ["heatmap-density"],
+                  0, "rgba(33,102,172,0)",
+                  0.2, "rgb(103,169,207)",
+                  0.4, "rgb(209,229,240)",
+                  0.6, "rgb(253,219,199)",
+                  0.8, "rgb(239,138,98)",
+                  1, "rgb(178,24,43)"
+                ],
+                "heatmap-radius": 20,
+                "heatmap-opacity": 0.6
+              }
+            });
+          }
+        })
+        .catch(e => {
+          totalEl.textContent = "Erreur chargement heatmap : " + e.message;
+          console.error(e);
+        });
+    }
+
+    // Charger points dans la bbox visible (pagination)
+    function loadPointsInBBox(paginationPage = 0) {
+      const bbox = map.getBounds();
+      const url = buildUrl(bbox, pageSize, paginationPage * pageSize);
+
+      fetch(url)
+        .then(resp => {
+          if (!resp.ok) throw new Error('Erreur réseau points');
+          return resp.json();
+        })
+        .then(data => {
+          if (paginationPage === 0) {
+            clearMarkers();
+            currentData = [];
+          }
+          currentData = currentData.concat(data.results);
+          addMarkers(data.results);
+
+          if (data.results.length === pageSize) {
+            loadMoreBtn.style.display = 'inline-block';
+          } else {
+            loadMoreBtn.style.display = 'none';
+          }
+          totalEl.textContent = `Arbres affichés : ${currentData.length} / Total approximatif dans la zone : ${data.total_count || '?'}`;
+          currentPage = paginationPage;
+        })
+        .catch(e => {
+          totalEl.textContent = "Erreur chargement points : " + e.message;
+          console.error(e);
+        });
+    }
+
+    // Initialisation
+    window.onload = () => {
+      map = new mapboxgl.Map({
+        container: 'map',
+        style: 'mapbox://styles/mapbox/streets-v12',
+        center: [-0.57, 44.85],
+        zoom: 12
+      });
+
+      loadHeatmapSample();
+
+      // Charger les points détaillés quand zoom >= 13
+      function updatePoints() {
+        if (map.getZoom() >= 13) {
+          loadPointsInBBox(0);
+        } else {
+          clearMarkers();
+          loadMoreBtn.style.display = 'none';
+          totalEl.textContent = 'Zoomer pour afficher les arbres détaillés';
+        }
+      }
+
+      map.on('load', updatePoints);
+      map.on('moveend', updatePoints);
+      map.on('zoomend', updatePoints);
+
+      loadMoreBtn.addEventListener('click', () => {
+        loadPointsInBBox(currentPage + 1);
+      });
+    };
+  </script>
+
 </body>
 </html>

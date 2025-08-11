@@ -2,9 +2,8 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <title>Opendata Bordeaux - Arbres</title>
+  <title>Arbres Bordeaux dynamiques</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
   <style>
     body { margin:0; font-family: Arial, sans-serif; }
@@ -16,7 +15,7 @@
 </head>
 <body>
 
-  <h1>Arbres à Bordeaux (OpenData)</h1>
+  <h1>Arbres à Bordeaux (chargement dynamique)</h1>
   <p id="total"></p>
 
   <div id="map"></div>
@@ -40,31 +39,36 @@
   <script>
     mapboxgl.accessToken = 'pk.eyJ1IjoiamVqZTMzMDAwIiwiYSI6ImNtZTJ2c3RnaDAwczEyanF6bW9wODI0cTgifQ.AYOAKWDyDLP_fbKIz-QdwQ';
 
-    const limit = 100;
+    const map = new mapboxgl.Map({
+      container: 'map',
+      style: 'mapbox://styles/mapbox/streets-v12',
+      center: [-0.57, 44.85],
+      zoom: 11
+    });
+
+    // Source et layers seront ajoutés plus tard
+    let sourceAdded = false;
+
+    // URL de l'API proxy (adapter si besoin)
     const baseUrl = 'https://bmproxy.jeromevallies.workers.dev/';
 
-    async function fetchAllTrees() {
-      let offset = 0;
-      let total = Infinity;
-      let allResults = [];
-
-      while (offset < total) {
-        const url = `${baseUrl}?limit=${limit}&offset=${offset}`;
-        const resp = await fetch(url, { mode: 'cors' });
-        if (!resp.ok) throw new Error('Erreur réseau');
-        const data = await resp.json();
-
-        allResults = allResults.concat(data.results);
-        total = data.total_count;
-        offset += limit;
-      }
-      return allResults;
+    // Fonction pour récupérer les données via bbox (limites visibles)
+    function fetchTrees(bbox) {
+      // bbox = "west,south,east,north"
+      // On limite à 100 arbres max à chaque requête
+      const url = `${baseUrl}?limit=100&bbox=${bbox}`;
+      return fetch(url)
+        .then(res => {
+          if (!res.ok) throw new Error('Erreur réseau');
+          return res.json();
+        });
     }
 
-    function createTableRows(data) {
+    // Met à jour la table HTML avec les arbres visibles
+    function updateTable(trees) {
       const tbody = document.querySelector('#treeTable tbody');
-      tbody.innerHTML = ''; // Clear previous rows
-      data.forEach(item => {
+      tbody.innerHTML = '';
+      trees.forEach(item => {
         const tr = document.createElement('tr');
         tr.innerHTML = `
           <td>${item.nom_francais || ''}</td>
@@ -79,10 +83,11 @@
       });
     }
 
-    function convertToGeoJSON(data) {
+    // Convertit les données de l'API en GeoJSON pour Mapbox
+    function toGeoJSON(data) {
       return {
         type: "FeatureCollection",
-        features: data
+        features: data.results
           .filter(item => item.geo_point_2d && item.geo_point_2d.lon && item.geo_point_2d.lat)
           .map(item => ({
             type: "Feature",
@@ -91,137 +96,118 @@
               coordinates: [item.geo_point_2d.lon, item.geo_point_2d.lat]
             },
             properties: {
-              nom_francais: item.nom_francais || 'Arbre',
-              station: item.station || 'N/A',
-              circonference: item.circonference || 'N/A',
-              hauteur: item.hauteur || 'N/A',
-              essence: item.essence || 'N/A'
+              nom_francais: item.nom_francais,
+              station: item.station,
+              circonference: item.circonference,
+              hauteur: item.hauteur,
+              statut: item.statut,
+              diametre: item.diametre,
+              essence: item.essence
             }
           }))
       };
     }
 
-    function addHeatmapLayer(map, sourceId) {
-      if (map.getLayer('trees-heat')) return; // éviter doublons
-
-      map.addLayer({
-        id: 'trees-heat',
-        type: 'heatmap',
-        source: sourceId,
-        maxzoom: 14,
-        paint: {
-          // Intensité
-          'heatmap-weight': [
-            'interpolate',
-            ['linear'],
-            ['get', 'circonference'],
-            0, 0,
-            50, 1
-          ],
-          // Couleur
-          'heatmap-color': [
-            'interpolate',
-            ['linear'],
-            ['heatmap-density'],
-            0, 'rgba(33,102,172,0)',
-            0.2, 'rgb(103,169,207)',
-            0.4, 'rgb(209,229,240)',
-            0.6, 'rgb(253,219,199)',
-            0.8, 'rgb(239,138,98)',
-            1, 'rgb(178,24,43)'
-          ],
-          // Taille des points
-          'heatmap-radius': [
-            'interpolate',
-            ['linear'],
-            ['zoom'],
-            0, 2,
-            14, 20
-          ],
-          // Opacité
-          'heatmap-opacity': [
-            'interpolate',
-            ['linear'],
-            ['zoom'],
-            13, 1,
-            14, 0
-          ]
-        }
-      });
-    }
-
-    function addCircleLayer(map, sourceId) {
-      if (map.getLayer('trees-circle')) return;
-
-      map.addLayer({
-        id: 'trees-circle',
-        type: 'circle',
-        source: sourceId,
-        minzoom: 14,
-        paint: {
-          'circle-radius': 6,
-          'circle-color': '#3887be',
-          'circle-stroke-color': 'white',
-          'circle-stroke-width': 1,
-          'circle-opacity': 0.7
-        }
-      });
-
-      // Popup au clic sur un arbre
-      map.on('click', 'trees-circle', (e) => {
-        const coordinates = e.features[0].geometry.coordinates.slice();
-        const props = e.features[0].properties;
-        new mapboxgl.Popup()
-          .setLngLat(coordinates)
-          .setHTML(`
-            <strong>${props.nom_francais}</strong><br/>
-            Station: ${props.station}<br/>
-            Circonférence: ${props.circonference} cm<br/>
-            Hauteur: ${props.hauteur} m<br/>
-            Essence: ${props.essence}
-          `)
-          .addTo(map);
-      });
-
-      // Curseur pointer au survol
-      map.on('mouseenter', 'trees-circle', () => {
-        map.getCanvas().style.cursor = 'pointer';
-      });
-      map.on('mouseleave', 'trees-circle', () => {
-        map.getCanvas().style.cursor = '';
-      });
-    }
-
-    (async () => {
-      try {
-        const allTrees = await fetchAllTrees();
-        document.getElementById('total').textContent = `Nombre total d'arbres : ${allTrees.length}`;
-        createTableRows(allTrees);
-
-        const geojson = convertToGeoJSON(allTrees);
-
-        const map = new mapboxgl.Map({
-          container: 'map',
-          style: 'mapbox://styles/mapbox/streets-v12',
-          center: [-0.57, 44.85],
-          zoom: 13
+    // Mets à jour la source Mapbox et les couches (heatmap ou markers)
+    function updateMap(dataGeoJSON, zoom) {
+      if (!sourceAdded) {
+        map.addSource('arbres', {
+          type: 'geojson',
+          data: dataGeoJSON
         });
 
-        map.on('load', () => {
-          map.addSource('trees', {
-            type: 'geojson',
-            data: geojson
-          });
-
-          addHeatmapLayer(map, 'trees');
-          addCircleLayer(map, 'trees');
+        // Heatmap layer
+        map.addLayer({
+          id: 'arbres-heatmap',
+          type: 'heatmap',
+          source: 'arbres',
+          maxzoom: 14,
+          paint: {
+            // Intensité et couleur heatmap
+            'heatmap-weight': 1,
+            'heatmap-intensity': ['interpolate', ['linear'], ['zoom'], 0, 1, 14, 3],
+            'heatmap-color': [
+              'interpolate',
+              ['linear'],
+              ['heatmap-density'],
+              0, 'rgba(0, 0, 255, 0)',
+              0.1, 'blue',
+              0.3, 'cyan',
+              0.5, 'lime',
+              0.7, 'yellow',
+              1, 'red'
+            ],
+            'heatmap-radius': ['interpolate', ['linear'], ['zoom'], 0, 2, 14, 20],
+            'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 10, 1, 14, 0]
+          }
         });
 
-      } catch (error) {
-        document.body.innerHTML = `<p>Erreur lors du chargement des données : ${error.message}</p>`;
-        console.error(error);
+        // Circle layer for points (markers)
+        map.addLayer({
+          id: 'arbres-points',
+          type: 'circle',
+          source: 'arbres',
+          minzoom: 14,
+          paint: {
+            'circle-radius': 6,
+            'circle-color': '#007cbf',
+            'circle-stroke-color': 'white',
+            'circle-stroke-width': 1
+          }
+        });
+
+        // Popup au clic sur un point
+        map.on('click', 'arbres-points', (e) => {
+          const props = e.features[0].properties;
+          new mapboxgl.Popup()
+            .setLngLat(e.features[0].geometry.coordinates)
+            .setHTML(`
+              <strong>${props.nom_francais || 'Arbre'}</strong><br/>
+              Station: ${props.station || 'N/A'}<br/>
+              Circonférence: ${props.circonference || 'N/A'} cm<br/>
+              Hauteur: ${props.hauteur || 'N/A'} m<br/>
+              Essence: ${props.essence || 'N/A'}
+            `)
+            .addTo(map);
+        });
+
+        map.on('mouseenter', 'arbres-points', () => {
+          map.getCanvas().style.cursor = 'pointer';
+        });
+        map.on('mouseleave', 'arbres-points', () => {
+          map.getCanvas().style.cursor = '';
+        });
+
+        sourceAdded = true;
+      } else {
+        map.getSource('arbres').setData(dataGeoJSON);
       }
-    })();
+    }
+
+    // Chargement initial + à chaque déplacement/zoom
+    function loadData() {
+      const bounds = map.getBounds();
+      const bbox = [
+        bounds.getWest(),
+        bounds.getSouth(),
+        bounds.getEast(),
+        bounds.getNorth()
+      ].join(',');
+
+      fetchTrees(bbox)
+        .then(data => {
+          document.getElementById('total').textContent = `Nombre d'arbres dans la zone: ${data.total_count}`;
+          const geojson = toGeoJSON(data);
+          updateMap(geojson, map.getZoom());
+          updateTable(data.results);
+        })
+        .catch(err => {
+          console.error('Erreur chargement arbres:', err);
+        });
+    }
+
+    map.on('load', loadData);
+    map.on('moveend', loadData);
   </script>
 
 </body>

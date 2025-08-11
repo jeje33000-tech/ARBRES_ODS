@@ -2,13 +2,13 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <title>Opendata</title>
+  <title>Opendata Bordeaux - Arbres</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 
   <link href="https://api.mapbox.com/mapbox-gl-js/v2.15.0/mapbox-gl.css" rel="stylesheet" />
   <style>
     body { margin:0; font-family: Arial, sans-serif; }
-    #map { width: 100%; height: 400px; margin-bottom: 20px; }
+    #map { width: 100%; height: 500px; margin-bottom: 20px; }
     table { border-collapse: collapse; width: 100%; margin-bottom: 40px; }
     th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
     th { background-color: #f2f2f2; }
@@ -40,61 +40,188 @@
   <script>
     mapboxgl.accessToken = 'pk.eyJ1IjoiamVqZTMzMDAwIiwiYSI6ImNtZTJ2c3RnaDAwczEyanF6bW9wODI0cTgifQ.AYOAKWDyDLP_fbKIz-QdwQ';
 
-    const url = 'https://bmproxy.jeromevallies.workers.dev/';
+    const limit = 100;
+    const baseUrl = 'https://bmproxy.jeromevallies.workers.dev/';
 
-    fetch(url, { mode: 'cors' })
-      .then(resp => {
+    async function fetchAllTrees() {
+      let offset = 0;
+      let total = Infinity;
+      let allResults = [];
+
+      while (offset < total) {
+        const url = `${baseUrl}?limit=${limit}&offset=${offset}`;
+        const resp = await fetch(url, { mode: 'cors' });
         if (!resp.ok) throw new Error('Erreur réseau');
-        return resp.json();
-      })
-      .then(data => {
-        document.getElementById('total').textContent = `Nombre total d'arbres : ${data.total_count}`;
+        const data = await resp.json();
 
-        const tbody = document.querySelector('#treeTable tbody');
-        data.results.forEach(item => {
-          const tr = document.createElement('tr');
-          tr.innerHTML = `
-            <td>${item.nom_francais || ''}</td>
-            <td>${item.station || ''}</td>
-            <td>${item.circonference || ''}</td>
-            <td>${item.hauteur || ''}</td>
-            <td>${item.statut || ''}</td>
-            <td>${item.diametre || ''}</td>
-            <td>${item.essence || ''}</td>
-          `;
-          tbody.appendChild(tr);
-        });
+        allResults = allResults.concat(data.results);
+        total = data.total_count;
+        offset += limit;
+      }
+      return allResults;
+    }
 
-        // Initialisation de la carte centrée sur Bordeaux
+    function createTableRows(data) {
+      const tbody = document.querySelector('#treeTable tbody');
+      tbody.innerHTML = ''; // Clear previous rows
+      data.forEach(item => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td>${item.nom_francais || ''}</td>
+          <td>${item.station || ''}</td>
+          <td>${item.circonference || ''}</td>
+          <td>${item.hauteur || ''}</td>
+          <td>${item.statut || ''}</td>
+          <td>${item.diametre || ''}</td>
+          <td>${item.essence || ''}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function convertToGeoJSON(data) {
+      return {
+        type: "FeatureCollection",
+        features: data
+          .filter(item => item.geo_point_2d && item.geo_point_2d.lon && item.geo_point_2d.lat)
+          .map(item => ({
+            type: "Feature",
+            geometry: {
+              type: "Point",
+              coordinates: [item.geo_point_2d.lon, item.geo_point_2d.lat]
+            },
+            properties: {
+              nom_francais: item.nom_francais || 'Arbre',
+              station: item.station || 'N/A',
+              circonference: item.circonference || 'N/A',
+              hauteur: item.hauteur || 'N/A',
+              essence: item.essence || 'N/A'
+            }
+          }))
+      };
+    }
+
+    function addHeatmapLayer(map, sourceId) {
+      if (map.getLayer('trees-heat')) return; // éviter doublons
+
+      map.addLayer({
+        id: 'trees-heat',
+        type: 'heatmap',
+        source: sourceId,
+        maxzoom: 14,
+        paint: {
+          // Intensité
+          'heatmap-weight': [
+            'interpolate',
+            ['linear'],
+            ['get', 'circonference'],
+            0, 0,
+            50, 1
+          ],
+          // Couleur
+          'heatmap-color': [
+            'interpolate',
+            ['linear'],
+            ['heatmap-density'],
+            0, 'rgba(33,102,172,0)',
+            0.2, 'rgb(103,169,207)',
+            0.4, 'rgb(209,229,240)',
+            0.6, 'rgb(253,219,199)',
+            0.8, 'rgb(239,138,98)',
+            1, 'rgb(178,24,43)'
+          ],
+          // Taille des points
+          'heatmap-radius': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            0, 2,
+            14, 20
+          ],
+          // Opacité
+          'heatmap-opacity': [
+            'interpolate',
+            ['linear'],
+            ['zoom'],
+            13, 1,
+            14, 0
+          ]
+        }
+      });
+    }
+
+    function addCircleLayer(map, sourceId) {
+      if (map.getLayer('trees-circle')) return;
+
+      map.addLayer({
+        id: 'trees-circle',
+        type: 'circle',
+        source: sourceId,
+        minzoom: 14,
+        paint: {
+          'circle-radius': 6,
+          'circle-color': '#3887be',
+          'circle-stroke-color': 'white',
+          'circle-stroke-width': 1,
+          'circle-opacity': 0.7
+        }
+      });
+
+      // Popup au clic sur un arbre
+      map.on('click', 'trees-circle', (e) => {
+        const coordinates = e.features[0].geometry.coordinates.slice();
+        const props = e.features[0].properties;
+        new mapboxgl.Popup()
+          .setLngLat(coordinates)
+          .setHTML(`
+            <strong>${props.nom_francais}</strong><br/>
+            Station: ${props.station}<br/>
+            Circonférence: ${props.circonference} cm<br/>
+            Hauteur: ${props.hauteur} m<br/>
+            Essence: ${props.essence}
+          `)
+          .addTo(map);
+      });
+
+      // Curseur pointer au survol
+      map.on('mouseenter', 'trees-circle', () => {
+        map.getCanvas().style.cursor = 'pointer';
+      });
+      map.on('mouseleave', 'trees-circle', () => {
+        map.getCanvas().style.cursor = '';
+      });
+    }
+
+    (async () => {
+      try {
+        const allTrees = await fetchAllTrees();
+        document.getElementById('total').textContent = `Nombre total d'arbres : ${allTrees.length}`;
+        createTableRows(allTrees);
+
+        const geojson = convertToGeoJSON(allTrees);
+
         const map = new mapboxgl.Map({
           container: 'map',
           style: 'mapbox://styles/mapbox/streets-v12',
-          center: [-0.57, 44.85], // Bordeaux approx
+          center: [-0.57, 44.85],
           zoom: 13
         });
 
-        // Ajout des markers
-        data.results.forEach(item => {
-          if (item.geo_point_2d && item.geo_point_2d.lon && item.geo_point_2d.lat) {
-            const marker = new mapboxgl.Marker()
-              .setLngLat([item.geo_point_2d.lon, item.geo_point_2d.lat])
-              .setPopup(new mapboxgl.Popup({ offset: 25 })
-                .setHTML(`
-                  <strong>${item.nom_francais || 'Arbre'}</strong><br/>
-                  Station: ${item.station || 'N/A'}<br/>
-                  Circonférence: ${item.circonference || 'N/A'} cm<br/>
-                  Hauteur: ${item.hauteur || 'N/A'} m<br/>
-                  Essence: ${item.essence || 'N/A'}
-                `))
-              .addTo(map);
-          }
+        map.on('load', () => {
+          map.addSource('trees', {
+            type: 'geojson',
+            data: geojson
+          });
+
+          addHeatmapLayer(map, 'trees');
+          addCircleLayer(map, 'trees');
         });
 
-      })
-      .catch(error => {
+      } catch (error) {
         document.body.innerHTML = `<p>Erreur lors du chargement des données : ${error.message}</p>`;
         console.error(error);
-      });
+      }
+    })();
   </script>
 
 </body>
